@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta charset="UTF-8" />
+  <meta charset="UTF-8" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>지하철 역 입구 3D</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #info {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.45);
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.5;
+      z-index: 10;
+      max-width: 380px;
+      user-select: none;
+    }
+    #crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin-left: -5px;
+      margin-top: -5px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #crosshair::before, #crosshair::after {
+      content: "";
+      position: absolute;
+      background: rgba(255,255,255,0.9);
+    }
+    #crosshair::before {
+      left: 4px;
+      top: 0;
+      width: 2px;
+      height: 10px;
+    }
+    #crosshair::after {
+      left: 0;
+      top: 4px;
+      width: 10px;
+      height: 2px;
+    }
+    #blocker {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.35);
+      color: #fff;
+      z-index: 20;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    #blocker .box {
+      background: rgba(0,0,0,0.65);
+      padding: 18px 20px;
+      border-radius: 14px;
+      max-width: 420px;
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    #message {
+      position: fixed;
+      left: 50%;
+      top: 18%;
+      transform: translateX(-50%);
+      padding: 14px 20px;
+      border-radius: 14px;
+      background: rgba(0,0,0,0.75);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 700;
+      z-index: 30;
+      display: none;
+      user-select: none;
+      text-align: center;
+      white-space: nowrap;
+    }
+    #help {
+      opacity: 0.9;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <strong>지하철 역 입구 3D</strong><br />
+    마우스로 시점 조종: 클릭 후 드래그<br />
+    이동: WASD / 방향키<br />
+    시점 높이: 휠체어 사용자 기준 낮은 1인칭 시점
+  </div>
+  <div id="crosshair"></div>
+  <div id="message"></div>
+  <div id="blocker">
+    <div class="box">
+      <div style="font-size:18px; font-weight:700; margin-bottom:8px;">클릭해서 시작</div>
+      <div id="help">
+        마우스로 고개를 돌리고, WASD 키로 이동할 수 있습니다.<br />
+        ESC를 누르면 포인터 잠금이 해제됩니다.
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    let scene, camera, renderer;
+    let yaw = 0, pitch = 0;
+    const keys = {};
+    const clock = new THREE.Clock();
+    const moveSpeed = 4.0;
+    const sensitivity = 0.0022;
+
+    let movementLocked = false;
+    let elevatorHit = false;
+    let messageTimer = null;
+
+    const colliders = { elevator: [], poles: [], whiteBlocks: [], scooters: [] };
+
+    init();
+    animate();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x9ec7ff);
+      scene.fog = new THREE.Fog(0x9ec7ff, 20, 180);
+
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+      camera.position.set(0, 1.2, 9);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      document.body.appendChild(renderer.domElement);
+
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x7a7a7a, 1.2));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+      sun.position.set(20, 30, 10);
+      scene.add(sun);
+
+      createGround();
+      createStreet();
+      createStationEntrance();
+      createSurroundings();
+      createProps();
+
+      document.addEventListener('keydown', onKeyDown);
+      document.addEventListener('keyup', onKeyUp);
+      document.addEventListener('click', onClick);
+      document.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('resize', onResize);
+
+      document.addEventListener('pointerlockchange', () => {
+        document.getElementById('blocker').style.display =
+          document.pointerLockElement === document.body ? 'none' : 'flex';
+      });
+    }
+
+    function createGround() {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), new THREE.MeshStandardMaterial({ color: 0x5a8b4d, roughness: 1 }));
+      mesh.rotation.x = -Math.PI / 2;
+      scene.add(mesh);
+
+      const asphalt = new THREE.Mesh(new THREE.PlaneGeometry(180, 90), new THREE.MeshStandardMaterial({ color: 0x666b70, roughness: 1 }));
+      asphalt.rotation.x = -Math.PI / 2;
+      asphalt.position.set(0, 0.01, 12);
+      scene.add(asphalt);
+    }
+
+    function createStreet() {
+      for (let i = -70; i <= 70; i += 14) {
+        const line = new THREE.Mesh(new THREE.BoxGeometry(8, 0.02, 0.3), new THREE.MeshStandardMaterial({ color: 0xd9d9d9, roughness: 1 }));
+        line.position.set(i, 0.02, 12);
+        scene.add(line);
+      }
+      for (let z = -20; z <= 55; z += 18) {
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.02, 6), new THREE.MeshStandardMaterial({ color: 0xd9d9d9, roughness: 1 }));
+        stripe.position.set(0, 0.02, z);
+        scene.add(stripe);
+      }
+    }
+
+    function createStationEntrance() {
+      const baseMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.9 });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x3b3b3b, roughness: 0.9 });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x88ccee, transparent: true, opacity: 0.35, roughness: 0.2 });
+
+      const entranceBase = new THREE.Mesh(new THREE.BoxGeometry(12, 0.8, 10), baseMat);
+      entranceBase.position.set(0, 0.4, -20);
+      scene.add(entranceBase);
+      colliders.whiteBlocks.push(entranceBase);
+
+      const frontBlock = new THREE.Mesh(new THREE.BoxGeometry(12, 5.5, 2), baseMat);
+      frontBlock.position.set(0, 3.15, -25);
+      scene.add(frontBlock);
+      colliders.whiteBlocks.push(frontBlock);
+
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(13, 0.6, 11), darkMat);
+      roof.position.set(0, 5.8, -20);
+      scene.add(roof);
+
+      const glassFront = new THREE.Mesh(new THREE.BoxGeometry(10.8, 3.4, 0.15), glassMat);
+      glassFront.position.set(0, 2.4, -24.1);
+      scene.add(glassFront);
+
+      const doorway = new THREE.Mesh(new THREE.BoxGeometry(4.5, 3.8, 1.8), darkMat);
+      doorway.position.set(0, 2.0, -23.9);
+      scene.add(doorway);
+
+      const signBoard = new THREE.Mesh(new THREE.BoxGeometry(7.5, 1.2, 0.3), new THREE.MeshStandardMaterial({ color: 0x1266cc }));
+      signBoard.position.set(0, 4.5, -24.2);
+      scene.add(signBoard);
+
+      const signText = makeTextPanel("지하철역", 0xffffff, 0x1266cc);
+      signText.position.set(0, 4.5, -24.0);
+      scene.add(signText);
+
+      const stairLeft = makeStair(4.5, 1.8, 5, -6.5);
+      const stairRight = makeStair(4.5, 1.8, 5, 6.5);
+      stairLeft.position.set(-6.5, 0, -19.5);
+      stairRight.position.set(6.5, 0, -19.5);
+      scene.add(stairLeft);
+      scene.add(stairRight);
+
+      const handrailMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.7, roughness: 0.3 });
+      for (const x of [-7.8, -5.2, 5.2, 7.8]) {
+        const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 5.5, 10), handrailMat);
+        rail.position.set(x, 2.7, -19.5);
+        scene.add(rail);
+      }
+
+      const elevator = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.5, 3.2), new THREE.MeshStandardMaterial({ color: 0x6e747c }));
+      elevator.position.set(11, 2.25, -22.5);
+      scene.add(elevator);
+      colliders.elevator.push(elevator);
+
+      const elevatorDoor = new THREE.Mesh(new THREE.BoxGeometry(2.2, 3.2, 0.08), darkMat);
+      elevatorDoor.position.set(11, 2.0, -20.85);
+      scene.add(elevatorDoor);
+
+      const elevatorSign = makeTextPanel("엘리베이터", 0xffffff, 0x444444);
+      elevatorSign.scale.set(0.8, 0.8, 0.8);
+      elevatorSign.position.set(11, 4.9, -22.5);
+      scene.add(elevatorSign);
+    }
+
+    function createSurroundings() {
+      const buildingMat = new THREE.MeshStandardMaterial({ color: 0xd7d0c8, roughness: 0.95 });
+      const windowMat = new THREE.MeshStandardMaterial({ color: 0x8ec5ff, transparent: true, opacity: 0.55 });
+
+      const b1 = new THREE.Mesh(new THREE.BoxGeometry(16, 10, 12), buildingMat);
+      b1.position.set(-28, 5, -18);
+      scene.add(b1);
+
+      const w1 = new THREE.Mesh(new THREE.BoxGeometry(13, 5, 0.2), windowMat);
+      w1.position.set(-28, 5, -11.9);
+      scene.add(w1);
+
+      const b2 = new THREE.Mesh(new THREE.BoxGeometry(14, 8, 14), buildingMat);
+      b2.position.set(28, 4, -10);
+      scene.add(b2);
+
+      const b3 = new THREE.Mesh(new THREE.BoxGeometry(12, 12, 12), new THREE.MeshStandardMaterial({ color: 0xc9d3dc }));
+      b3.position.set(35, 6, 22);
+      scene.add(b3);
+
+      [[-18, -2], [-38, 16], [22, 32], [34, -24], [44, 8]].forEach(([x, z]) => addTree(x, z));
+
+      for (let i = -2; i <= 2; i++) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 7, 10), new THREE.MeshStandardMaterial({ color: 0x666666 }));
+        pole.position.set(i * 14, 3.5, 6);
+        scene.add(pole);
+        colliders.poles.push(pole);
+
+        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 16), new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0xffd88a, emissiveIntensity: 0.4 }));
+        lamp.position.set(i * 14, 6.7, 6);
+        scene.add(lamp);
+      }
+    }
+
+    function createProps() {
+      const benchMat = new THREE.MeshStandardMaterial({ color: 0x7a4f2a });
+      const metalMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+
+      const bench1 = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.2, 0.8), benchMat);
+      bench1.position.set(-10, 0.7, 18);
+      scene.add(bench1);
+
+      const bench2 = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.8, 0.8), metalMat);
+      bench2.position.set(-11.3, 0.4, 18);
+      scene.add(bench2);
+
+      const bench3 = bench2.clone();
+      bench3.position.set(-8.7, 0.4, 18);
+      scene.add(bench3);
+
+      const signPole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 6, 8), metalMat);
+      signPole.position.set(14, 3, 18);
+      scene.add(signPole);
+
+      const sign = makeTextPanel("출구 2", 0xffffff, 0x116611);
+      sign.scale.set(0.9, 0.9, 0.9);
+      sign.position.set(14, 5.1, 18);
+      scene.add(sign);
+
+      const scooter = createScooter();
+      scooter.scale.set(1.18, 1.18, 1.18);
+      scooter.position.set(0, 0.55, -16.6);
+      scooter.rotation.y = 0.05;
+      scene.add(scooter);
+      colliders.scooters.push(scooter);
+    }
+
+    function createScooter() {
+      const group = new THREE.Group();
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+      const accentMat = new THREE.MeshStandardMaterial({ color: 0x00a0ff });
+      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 0.22), bodyMat);
+      deck.position.set(0, 0.35, 0);
+      group.add(deck);
+
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.0, 12), bodyMat);
+      stem.position.set(0.4, 0.85, 0);
+      stem.rotation.z = -0.25;
+      group.add(stem);
+
+      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.05, 0.05), bodyMat);
+      handle.position.set(0.75, 1.32, 0);
+      group.add(handle);
+
+      const stemCap = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 10), accentMat);
+      stemCap.position.set(0.75, 1.32, 0);
+      group.add(stemCap);
+
+      const wheel1 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.04, 14), wheelMat);
+      wheel1.rotation.z = Math.PI / 2;
+      wheel1.position.set(-0.45, 0.15, 0);
+      group.add(wheel1);
+
+      const wheel2 = wheel1.clone();
+      wheel2.position.set(0.45, 0.15, 0);
+      group.add(wheel2);
+
+      const kickstand = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.25, 0.03), bodyMat);
+      kickstand.position.set(-0.15, 0.17, 0.08);
+      kickstand.rotation.z = -0.9;
+      group.add(kickstand);
+
+      return group;
+    }
+
+    function makeStair(w, h, d, xOffset) {
+      const group = new THREE.Group();
+      const stepMat = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 1 });
+      for (let i = 0; i < d; i++) {
+        const step = new THREE.Mesh(new THREE.BoxGeometry(w, h / d, 1), stepMat);
+        step.position.set(0, (i + 0.5) * (h / d), -i + d * 0.5);
+        group.add(step);
+      }
+      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color: 0xa0a0a0, roughness: 1 }));
+      body.position.y = h / 2;
+      group.add(body);
+      group.position.x = xOffset;
+      return group;
+    }
+
+    function addTree(x, z) {
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 2.4, 10), new THREE.MeshStandardMaterial({ color: 0x7a4b2a }));
+      trunk.position.set(x, 1.2, z);
+      scene.add(trunk);
+
+      const crown = new THREE.Mesh(new THREE.SphereGeometry(1.4, 16, 16), new THREE.MeshStandardMaterial({ color: 0x2f7d32 }));
+      crown.position.set(x, 3.1, z);
+      scene.add(crown);
+    }
+
+    function makeTextPanel(text, fg, bg) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#' + bg.toString(16).padStart(6, '0');
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#' + fg.toString(16).padStart(6, '0');
+      ctx.font = 'bold 54px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+      const texture = new THREE.CanvasTexture(canvas);
+      return new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.15), new THREE.MeshStandardMaterial({ map: texture }));
+    }
+
+    function showMessage(text, duration) {
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.style.display = 'block';
+      clearTimeout(messageTimer);
+      messageTimer = setTimeout(() => { el.style.display = 'none'; }, duration);
+    }
+
+    function onClick() {
+      if (document.pointerLockElement !== document.body) document.body.requestPointerLock();
+    }
+
+    function onMouseMove(e) {
+      if (document.pointerLockElement !== document.body) return;
+      yaw -= e.movementX * sensitivity;
+      pitch -= e.movementY * sensitivity;
+      pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, pitch));
+    }
+
+    function onKeyDown(e) { keys[e.code] = true; }
+    function onKeyUp(e) { keys[e.code] = false; }
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function isNearBox(pos, mesh, radius) {
+      const box = new THREE.Box3().setFromObject(mesh);
+      const closest = new THREE.Vector3(
+        THREE.MathUtils.clamp(pos.x, box.min.x, box.max.x),
+        THREE.MathUtils.clamp(pos.y, box.min.y, box.max.y),
+        THREE.MathUtils.clamp(pos.z, box.min.z, box.max.z)
+      );
+      return closest.distanceTo(pos) < radius;
+    }
+
+    function handleCollisions() {
+      const pos = camera.position.clone();
+      pos.y = 1.2;
+
+      for (const el of colliders.elevator) {
+        if (isNearBox(pos, el, 1.0)) {
+          movementLocked = true;
+          elevatorHit = true;
+          showMessage("지하철 역에 도착하셨습니다", 2000);
+          return;
+        }
+      }
+
+      for (const item of [...colliders.poles, ...colliders.whiteBlocks, ...colliders.scooters]) {
+        if (isNearBox(pos, item, 0.85)) {
+          movementLocked = true;
+          showMessage("다른 길을 찾으세요", 1400);
+          setTimeout(() => { movementLocked = false; }, 1400);
+          return;
+        }
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+
+      if (!movementLocked && !elevatorHit) {
+        const move = new THREE.Vector3();
+        if (keys['KeyW'] || keys['ArrowUp']) move.z -= 1;
+        if (keys['KeyS'] || keys['ArrowDown']) move.z += 1;
+        if (keys['KeyA'] || keys['ArrowLeft']) move.x -= 1;
+        if (keys['KeyD'] || keys['ArrowRight']) move.x += 1;
+
+        if (move.lengthSq() > 0) {
+          move.normalize();
+          const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+          const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+          const moveVec = new THREE.Vector3()
+            .addScaledVector(forward, move.z)
+            .addScaledVector(right, move.x)
+            .normalize()
+            .multiplyScalar(moveSpeed * delta);
+
+          camera.position.add(moveVec);
+          handleCollisions();
+        }
+      }
+
+      camera.position.y = 1.2;
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
